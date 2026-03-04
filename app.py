@@ -6,20 +6,14 @@ from discord.ext import tasks
 
 TOKEN = os.getenv("TOKEN")
 
-# ================= CONFIG =================
-
 CRYPTO_CHANNEL_ID = 1478816867828240626
-METALS_CHANNEL_ID = 1478816867828240626
-PSX_CHANNEL_ID = 1478816955971665990
 GLOBAL_CHANNEL_ID = 1478817069415010425
-WHALE_CHANNEL_ID = 1478816921649545256
-
 ALERT_ROLE_ID = 1478820285263122572
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
-# ==========================================
+# ---------------- FETCH ---------------- #
 
 async def fetch_json(session, url):
     try:
@@ -32,109 +26,74 @@ async def fetch_json(session, url):
         print("Fetch Error:", e)
         return None
 
+# ---------------- CRYPTO DASHBOARD ---------------- #
 
-# ================= CRYPTO =================
-
-@tasks.loop(minutes=5)
-async def crypto_update():
+@tasks.loop(minutes=60)
+async def crypto_dashboard():
     await client.wait_until_ready()
     channel = client.get_channel(CRYPTO_CHANNEL_ID)
 
-    url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd"
-
     async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, url)
 
-    if not data:
+        # CoinGecko Prices
+        cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin,solana,ripple&vs_currencies=usd&include_24hr_change=true"
+        prices = await fetch_json(session, cg_url)
+
+        # Global Market
+        global_url = "https://api.coingecko.com/api/v3/global"
+        global_data = await fetch_json(session, global_url)
+
+        # Fear & Greed
+        fear_url = "https://api.alternative.me/fng/?limit=1"
+        fear_data = await fetch_json(session, fear_url)
+
+        # Funding Rate (Binance)
+        funding_url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        funding_data = await fetch_json(session, funding_url)
+
+    if not prices or not global_data:
         return
 
-    btc = data["bitcoin"]["usd"]
-    eth = data["ethereum"]["usd"]
+    btc = prices["bitcoin"]["usd"]
+    eth = prices["ethereum"]["usd"]
+    bnb = prices["binancecoin"]["usd"]
+    sol = prices["solana"]["usd"]
+    xrp = prices["ripple"]["usd"]
+
+    market_cap = global_data["data"]["total_market_cap"]["usd"]
+    volume = global_data["data"]["total_volume"]["usd"]
+
+    fear_value = fear_data["data"][0]["value"] if fear_data else "N/A"
+    funding_rate = float(funding_data["lastFundingRate"]) * 100 if funding_data else 0
 
     embed = discord.Embed(
-        title="💰 Crypto Market Update",
+        title="📊 Institutional Crypto Dashboard (Hourly)",
         color=0x00ffcc
     )
+
     embed.add_field(name="🟡 BTC", value=f"${btc:,}", inline=True)
     embed.add_field(name="🟣 ETH", value=f"${eth:,}", inline=True)
-    embed.set_footer(text="Source: CoinGecko")
+    embed.add_field(name="🟠 BNB", value=f"${bnb:,}", inline=True)
+    embed.add_field(name="🟢 SOL", value=f"${sol:,}", inline=True)
+    embed.add_field(name="🔵 XRP", value=f"${xrp:,}", inline=True)
 
-    await channel.send(embed=embed)
+    embed.add_field(name="🌍 Market Cap", value=f"${market_cap:,.0f}", inline=False)
+    embed.add_field(name="📈 24h Volume", value=f"${volume:,.0f}", inline=False)
+    embed.add_field(name="😱 Fear & Greed", value=fear_value, inline=True)
+    embed.add_field(name="💸 BTC Funding", value=f"{funding_rate:.4f}%", inline=True)
 
+    embed.set_footer(text="Free Mode • Conservative API Usage")
 
-# ================= METALS =================
+    await channel.send(f"<@&{ALERT_ROLE_ID}>", embed=embed)
 
-@tasks.loop(minutes=10)
-async def metals_update():
-    await client.wait_until_ready()
-    channel = client.get_channel(METALS_CHANNEL_ID)
+# ---------------- WHALE ALERT ---------------- #
 
-    url = "https://api.metals.live/v1/spot"
-
-    async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, url)
-
-    if not data:
-        return
-
-    prices = {list(item.keys())[0]: list(item.values())[0] for item in data}
-
-    gold = prices.get("gold")
-    silver = prices.get("silver")
-    copper = prices.get("copper")
-
-    embed = discord.Embed(
-        title="🏅 Metals Market",
-        color=0xffcc00
-    )
-    embed.add_field(name="🥇 Gold", value=f"${gold}" if gold else "N/A")
-    embed.add_field(name="🥈 Silver", value=f"${silver}" if silver else "N/A")
-    embed.add_field(name="🟤 Copper", value=f"${copper}" if copper else "N/A")
-
-    await channel.send(embed=embed)
-
-
-# ================= PSX =================
-
-@tasks.loop(minutes=15)
-async def psx_update():
-    await client.wait_until_ready()
-    channel = client.get_channel(PSX_CHANNEL_ID)
-
-    url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EKSE"
-
-    async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, url)
-
-    if not data:
-        return
-
-    try:
-        result = data["quoteResponse"]["result"][0]
-        price = result["regularMarketPrice"]
-        change = result["regularMarketChangePercent"]
-
-        embed = discord.Embed(
-            title="📈 PSX (KSE-100)",
-            color=0x00ff00 if change >= 0 else 0xff0000
-        )
-        embed.add_field(name="Index", value=f"{price:,}")
-        embed.add_field(name="Change", value=f"{change:.2f}%")
-
-        await channel.send(embed=embed)
-
-    except:
-        print("KSE format changed")
-
-
-# ================= GLOBAL SNAPSHOT =================
-
-@tasks.loop(minutes=20)
-async def global_snapshot():
+@tasks.loop(minutes=60)
+async def whale_alert():
     await client.wait_until_ready()
     channel = client.get_channel(GLOBAL_CHANNEL_ID)
 
-    url = "https://api.coingecko.com/api/v3/global"
+    url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=20"
 
     async with aiohttp.ClientSession() as session:
         data = await fetch_json(session, url)
@@ -142,65 +101,35 @@ async def global_snapshot():
     if not data:
         return
 
-    market_cap = data["data"]["total_market_cap"]["usd"]
-    volume = data["data"]["total_volume"]["usd"]
+    whales = [t for t in data if float(t["qty"]) > 10]
 
-    embed = discord.Embed(
-        title="🌍 Global Crypto Snapshot",
-        color=0x3498db
-    )
-    embed.add_field(name="Market Cap", value=f"${market_cap:,.0f}")
-    embed.add_field(name="24h Volume", value=f"${volume:,.0f}")
-
-    await channel.send(embed=embed)
-
-
-# ================= WHALE ALERT =================
-
-@tasks.loop(minutes=7)
-async def whale_alert():
-    await client.wait_until_ready()
-    channel = client.get_channel(WHALE_CHANNEL_ID)
-
-    url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=5"
-
-    async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, url)
-
-    if not data:
+    if not whales:
         return
 
-    large_trades = [trade for trade in data if float(trade["qty"]) > 5]
-
-    if not large_trades:
-        return
-
-    for trade in large_trades:
+    for trade in whales:
         qty = float(trade["qty"])
         price = float(trade["price"])
         value = qty * price
 
-        message = (
-            f"<@&{ALERT_ROLE_ID}> 🚨 **Whale Alert**\n"
-            f"BTC Trade: {qty} BTC\n"
+        msg = (
+            f"<@&{ALERT_ROLE_ID}> 🚨 **BTC Whale Trade Detected**\n"
+            f"Amount: {qty} BTC\n"
             f"Value: ${value:,.0f}"
         )
 
-        await channel.send(message)
+        await channel.send(msg)
 
-
-# ================= READY =================
+# ---------------- READY ---------------- #
 
 @client.event
 async def on_ready():
     print(f"Bot online as {client.user}")
 
-    crypto_update.start()
-    metals_update.start()
-    psx_update.start()
-    global_snapshot.start()
+    test_channel = client.get_channel(CRYPTO_CHANNEL_ID)
+    if test_channel:
+        await test_channel.send("✅ Free Institutional Bot Connected.")
+
+    crypto_dashboard.start()
     whale_alert.start()
-
-
 
 client.run(TOKEN)

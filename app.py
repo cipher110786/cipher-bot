@@ -28,7 +28,7 @@ async def fetch_json(session, url):
 
 # ---------------- CRYPTO DASHBOARD ---------------- #
 
-@tasks.loop(minutes=60)
+@tasks.loop(minutes=1)
 async def crypto_dashboard():
     await client.wait_until_ready()
     channel = client.get_channel(CRYPTO_CHANNEL_ID)
@@ -133,3 +133,4 @@ async def on_ready():
     whale_alert.start()
 
 client.run(TOKEN)
+

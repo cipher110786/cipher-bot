@@ -1,6 +1,8 @@
 discord.py
-requests
+python-binance
 pandas
 numpy
 ta
-python-binance
+requests
+aiohttp
+python-dotenv

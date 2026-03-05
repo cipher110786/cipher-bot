@@ -1,251 +1,251 @@
 import discord
+import os
 import requests
 import pandas as pd
-import os
+import numpy as np
+import random
+import ta
 from discord.ext import tasks
-from ta.trend import MACD, EMAIndicator
-from ta.momentum import RSIIndicator, StochasticOscillator
-from ta.volatility import BollingerBands
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-CMC_API = os.getenv("CMC_API")
+TOKEN=os.getenv("DISCORD_TOKEN")
+SIGNAL_CHANNEL=int(os.getenv("SIGNAL_CHANNEL"))
+ROLE=os.getenv("ALERT_ROLE_ID")
+CMC_KEY=os.getenv("CMC_API_KEY")
 
-CMC_CHANNEL = int(os.getenv("CMC_CHANNEL"))
-SIGNAL_CHANNEL = int(os.getenv("SIGNAL_CHANNEL"))
-WHALE_CHANNEL = int(os.getenv("WHALE_CHANNEL"))
-MARKET_CHANNEL = int(os.getenv("MARKET_CHANNEL"))
+COINS=os.getenv("COINS").split(",")
 
-intents = discord.Intents.default()
-client = discord.Client(intents=intents)
+intents=discord.Intents.default()
+client=discord.Client(intents=intents)
 
-coins = ["BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT"]
+# -----------------------------
+# Binance Market Data
+# -----------------------------
 
-# -----------------------
-# GET BINANCE DATA
-# -----------------------
+def get_klines(symbol,interval="15m",limit=120):
 
-def get_klines(symbol):
-
-    url=f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=15m&limit=150"
-
+    url=f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
     data=requests.get(url).json()
 
     df=pd.DataFrame(data)
 
-    df=df.iloc[:,0:6]
+    df=df.iloc[:,:6]
 
     df.columns=["time","open","high","low","close","volume"]
 
     df["close"]=df["close"].astype(float)
-    df["high"]=df["high"].astype(float)
-    df["low"]=df["low"].astype(float)
     df["volume"]=df["volume"].astype(float)
 
     return df
 
+# -----------------------------
+# Orderbook Whale Detection
+# -----------------------------
 
-# -----------------------
-# SIGNAL ENGINE
-# -----------------------
-
-def generate_signal(df):
-
-    close=df["close"]
-
-    macd=MACD(close)
-    rsi=RSIIndicator(close)
-    bb=BollingerBands(close)
-    stoch=StochasticOscillator(df["high"],df["low"],close)
-    ema=EMAIndicator(close,50)
-
-    macd_line=macd.macd().iloc[-1]
-    macd_signal=macd.macd_signal().iloc[-1]
-
-    rsi_val=rsi.rsi().iloc[-1]
-    stoch_val=stoch.stoch().iloc[-1]
-
-    price=close.iloc[-1]
-    ema_val=ema.ema_indicator().iloc[-1]
-
-    bb_high=bb.bollinger_hband().iloc[-1]
-    bb_low=bb.bollinger_lband().iloc[-1]
-
-    score=0
-
-    if macd_line > macd_signal:
-        score+=1
-    else:
-        score-=1
-
-    if rsi_val < 40:
-        score+=1
-    elif rsi_val > 60:
-        score-=1
-
-    if price < bb_low:
-        score+=1
-    elif price > bb_high:
-        score-=1
-
-    if stoch_val < 30:
-        score+=1
-    elif stoch_val > 70:
-        score-=1
-
-    if price > ema_val:
-        score+=1
-    else:
-        score-=1
-
-    if score >=3:
-        return "BUY",score
-    elif score <=-3:
-        return "SELL",score
-    else:
-        return "HOLD",score
-
-
-# -----------------------
-# ORDERBOOK
-# -----------------------
-
-def order_book(symbol):
+def whale_signal(symbol):
 
     url=f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=50"
 
     data=requests.get(url).json()
 
-    bids=sum(float(x[1]) for x in data["bids"])
-    asks=sum(float(x[1]) for x in data["asks"])
+    bids=sum(float(b[1]) for b in data["bids"])
+    asks=sum(float(a[1]) for a in data["asks"])
 
-    if bids > asks*1.4:
-        return "STRONG BUY PRESSURE"
+    if bids>asks*1.5:
+        return "🐳 Strong Buy Pressure"
 
-    elif asks > bids*1.4:
-        return "STRONG SELL PRESSURE"
+    elif asks>bids*1.5:
+        return "🐳 Strong Sell Pressure"
 
-    return "BALANCED"
+    else:
+        return "Balanced Flow"
 
+# -----------------------------
+# CoinMarketCap Bias
+# -----------------------------
 
-# -----------------------
-# CMC MARKET DATA
-# -----------------------
+def market_bias():
 
-def cmc_data():
+    url="https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
 
-    url="https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+    headers={"X-CMC_PRO_API_KEY":CMC_KEY}
 
-    headers={"X-CMC_PRO_API_KEY":CMC_API}
+    data=requests.get(url,headers=headers).json()
 
-    params={"limit":10,"convert":"USD"}
+    btc_dom=data["data"]["btc_dominance"]
 
-    r=requests.get(url,headers=headers,params=params).json()
+    if btc_dom>50:
+        return "BTC Dominance Market"
 
-    if "data" not in r:
+    else:
+        return "Altcoin Expansion"
+
+# -----------------------------
+# AI SIGNAL ENGINE
+# -----------------------------
+
+def analyze(symbol):
+
+    df=get_klines(symbol)
+
+    df["ema20"]=ta.trend.ema_indicator(df["close"],20)
+    df["ema50"]=ta.trend.ema_indicator(df["close"],50)
+    df["ema200"]=ta.trend.ema_indicator(df["close"],200)
+
+    df["rsi"]=ta.momentum.rsi(df["close"],14)
+
+    macd=ta.trend.MACD(df["close"])
+    df["macd"]=macd.macd()
+
+    bb=ta.volatility.BollingerBands(df["close"])
+    df["bb_high"]=bb.bollinger_hband()
+    df["bb_low"]=bb.bollinger_lband()
+
+    df["stoch"]=ta.momentum.stochrsi(df["close"])
+
+    latest=df.iloc[-1]
+
+    score=0
+    reasons=[]
+
+    # EMA trend
+    if latest["ema20"]>latest["ema50"]:
+        score+=1
+        reasons.append("EMA Bullish")
+
+    if latest["ema50"]>latest["ema200"]:
+        score+=1
+        reasons.append("Trend Strong")
+
+    # RSI
+    if latest["rsi"]<35:
+        score+=1
+        reasons.append("RSI Oversold")
+
+    if latest["rsi"]>70:
+        score-=1
+        reasons.append("RSI Overbought")
+
+    # MACD
+    if latest["macd"]>0:
+        score+=1
+        reasons.append("MACD Positive")
+
+    # Bollinger
+    if latest["close"]<latest["bb_low"]:
+        score+=1
+        reasons.append("BB Bounce")
+
+    # Volume spike
+    vol_avg=df["volume"].rolling(20).mean().iloc[-1]
+
+    if latest["volume"]>vol_avg*2:
+        score+=1
+        reasons.append("Volume Spike")
+
+    price=latest["close"]
+
+    if score>=4:
+
+        trade="Swing 📈"
+        signal="🟢 BUY"
+
+        entry=price
+        tp=round(price*1.05,4)
+        sl=round(price*0.97,4)
+
+    elif score>=2:
+
+        trade="Intraday ⚡"
+        signal="🟢 BUY"
+
+        entry=price
+        tp=round(price*1.03,4)
+        sl=round(price*0.98,4)
+
+    elif score<=-2:
+
+        trade="Scalp 🔥"
+        signal="🔴 SELL"
+
+        entry=price
+        tp=round(price*0.97,4)
+        sl=round(price*1.02,4)
+
+    else:
         return None
 
-    return r["data"]
+    whale=whale_signal(symbol)
 
+    confidence=min(100,50+score*10)
 
-# -----------------------
-# BOT READY
-# -----------------------
+    return{
+        "symbol":symbol,
+        "signal":signal,
+        "entry":entry,
+        "tp":tp,
+        "sl":sl,
+        "trade":trade,
+        "reasons":", ".join(reasons),
+        "whale":whale,
+        "confidence":confidence
+    }
 
-@client.event
-async def on_ready():
+# -----------------------------
+# SCANNER LOOP
+# -----------------------------
 
-    print("Elite Bot Connected")
+@tasks.loop(minutes=5)
 
-    market_loop.start()
+async def scanner():
 
+    channel=client.get_channel(SIGNAL_CHANNEL)
 
-# -----------------------
-# MAIN LOOP
-# -----------------------
+    coin=random.choice(COINS)
 
-@tasks.loop(minutes=30)
-async def market_loop():
+    result=analyze(coin)
 
-    cmc_channel=client.get_channel(CMC_CHANNEL)
-    signal_channel=client.get_channel(SIGNAL_CHANNEL)
-    whale_channel=client.get_channel(WHALE_CHANNEL)
-    market_channel=client.get_channel(MARKET_CHANNEL)
+    if result:
 
-    # CMC UPDATE
-
-    data=cmc_data()
-
-    if data:
-
-        text="**Top Market Update**\n\n"
-
-        for coin in data[:5]:
-
-            name=coin["symbol"]
-            price=coin["quote"]["USD"]["price"]
-            change=coin["quote"]["USD"]["percent_change_24h"]
-
-            text+=f"{name}  ${price:.2f}  ({change:.2f}%)\n"
-
-        await cmc_channel.send(text)
-
-
-    # SIGNAL ENGINE
-
-    for coin in coins:
-
-        df=get_klines(coin)
-
-        signal,score=generate_signal(df)
-
-        pressure=order_book(coin)
-
-        price=df["close"].iloc[-1]
+        bias=market_bias()
 
         msg=f"""
-**{coin} SIGNAL**
+<@&{ROLE}>
 
-Price: {price}
+🚨 **AI MARKET SIGNAL**
 
-Signal: {signal}
+Coin: {result['symbol']}
+Signal: {result['signal']}
 
-Confidence Score: {score}/5
+Trade Type: {result['trade']}
 
-Orderbook: {pressure}
+Entry: {result['entry']}
+Take Profit: {result['tp']}
+Stop Loss: {result['sl']}
+
+AI Confidence: {result['confidence']}%
+
+Indicators:
+{result['reasons']}
+
+Order Flow:
+{result['whale']}
+
+Market Bias:
+{bias}
 """
 
-        await signal_channel.send(msg)
+        await channel.send(msg)
 
+# -----------------------------
+# READY
+# -----------------------------
 
-    # WHALE DETECTOR
+@client.event
 
-    for coin in coins:
+async def on_ready():
 
-        df=get_klines(coin)
+    print("Institutional AI Trading Bot Online")
 
-        vol=df["volume"].iloc[-1]
-        avg=df["volume"].mean()
-
-        if vol > avg*3:
-
-            await whale_channel.send(
-                f"🐋 Whale Volume Spike detected in {coin}\nVolume: {vol}"
-            )
-
-
-    # MARKET SNAPSHOT
-
-    text="**Market Scan**\n"
-
-    for coin in coins:
-
-        df=get_klines(coin)
-
-        price=df["close"].iloc[-1]
-
-        text+=f"{coin} : {price}\n"
-
-    await market_channel.send(text)
-
+    scanner.start()
 
 client.run(TOKEN)

@@ -3,50 +3,56 @@ import aiohttp
 import asyncio
 import os
 import json
-from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("TOKEN")
-CMC_API = os.getenv("CMC_API_KEY")
+CMC_API = os.getenv("CMC_API")
 
 ROLE_ID = 1478820285263122572
 
 CHANNELS = {
-    "psx":1478816955971665990,
-    "crypto":1478816867828240626,
-    "global":1478817069415010425,
-    "commodity":1478816867828240626,
-    "whale":1478816921649545256
+    "psx": 1478816955971665990,
+    "crypto": 1478816867828240626,
+    "global": 1478817069415010425,
+    "commodity": 1478816867828240626,
+    "whale": 1478816921649545256
 }
 
-HEADERS={
-"User-Agent":"Mozilla/5.0"
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
 }
 
-intents=discord.Intents.default()
-client=discord.Client(intents=intents)
+intents = discord.Intents.default()
+client = discord.Client(intents=intents)
 
-# ---------------- FETCH FUNCTION ---------------- #
+# ---------------- HELPER ---------------- #
 
-async def fetch_json(session,url,headers=None,params=None):
+async def fetch_json(session, url, headers=None, params=None):
 
     try:
-        async with session.get(url,headers=headers,params=params) as r:
 
-            text=await r.text()
+        async with session.get(url, headers=headers, params=params) as r:
 
-            return json.loads(text)
+            text = await r.text()
+
+            try:
+                return json.loads(text)
+            except:
+                print("JSON parse error:", url)
+                return None
 
     except Exception as e:
-        print("Fetch error",url,e)
+
+        print("Fetch error", url, e)
         return None
 
 
-# ---------------- PSX DATA ---------------- #
+# ---------------- PSX MONITOR ---------------- #
 
 async def psx_monitor():
 
     await client.wait_until_ready()
-    channel=client.get_channel(CHANNELS["psx"])
+
+    channel = client.get_channel(CHANNELS["psx"])
 
     async with aiohttp.ClientSession() as session:
 
@@ -54,21 +60,28 @@ async def psx_monitor():
 
             try:
 
-                url="https://dps.psx.com.pk/indices/KSE100"
+                url = "https://dps.psx.com.pk/indices/KSE100"
 
-                async with session.get(url,headers=HEADERS) as r:
+                async with session.get(url, headers=HEADERS) as r:
 
-                    data=json.loads(await r.text())
+                    text = await r.text()
 
-                val=data["data"]["value"]
-                change=data["data"]["change"]
-                pct=data["data"]["percent_change"]
+                if "data" not in text:
+                    print("PSX returned HTML")
+                    await asyncio.sleep(3600)
+                    continue
 
-                msg=f"""
-📊 **PSX MARKET UPDATE**
+                data = json.loads(text)
 
-KSE100: **{val}**
-Change: **{change} ({pct}%)**
+                val = data["data"]["value"]
+                change = data["data"]["change"]
+                pct = data["data"]["percent_change"]
+
+                msg = f"""
+📊 **PSX MARKET**
+
+KSE100: {val}
+Change: {change} ({pct}%)
 
 <@&{ROLE_ID}>
 """
@@ -76,17 +89,23 @@ Change: **{change} ({pct}%)**
                 await channel.send(msg)
 
             except Exception as e:
-                print("PSX Error:",e)
+
+                print("PSX Error:", e)
 
             await asyncio.sleep(7200)
 
 
-# ---------------- CRYPTO (CMC) ---------------- #
+# ---------------- CRYPTO (CoinMarketCap) ---------------- #
 
 async def crypto_monitor():
 
     await client.wait_until_ready()
-    channel=client.get_channel(CHANNELS["crypto"])
+
+    channel = client.get_channel(CHANNELS["crypto"])
+
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API
+    }
 
     async with aiohttp.ClientSession() as session:
 
@@ -94,23 +113,23 @@ async def crypto_monitor():
 
             try:
 
-                headers={
-                "X-CMC_PRO_API_KEY":CMC_API
+                url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+
+                params = {
+                    "symbol": "BTC,ETH,SOL"
                 }
 
-                url="https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+                data = await fetch_json(session, url, headers=headers, params=params)
 
-                params={
-                "symbol":"BTC,ETH,SOL"
-                }
+                if not data:
+                    await asyncio.sleep(1800)
+                    continue
 
-                data=await fetch_json(session,url,headers,params)
+                btc = data["data"]["BTC"]["quote"]["USD"]["price"]
+                eth = data["data"]["ETH"]["quote"]["USD"]["price"]
+                sol = data["data"]["SOL"]["quote"]["USD"]["price"]
 
-                btc=data["data"]["BTC"]["quote"]["USD"]["price"]
-                eth=data["data"]["ETH"]["quote"]["USD"]["price"]
-                sol=data["data"]["SOL"]["quote"]["USD"]["price"]
-
-                msg=f"""
+                msg = f"""
 🪙 **CRYPTO MARKET**
 
 BTC: ${btc:,.0f}
@@ -123,7 +142,8 @@ SOL: ${sol:,.0f}
                 await channel.send(msg)
 
             except Exception as e:
-                print("Crypto Error:",e)
+
+                print("Crypto Error:", e)
 
             await asyncio.sleep(1800)
 
@@ -133,7 +153,8 @@ SOL: ${sol:,.0f}
 async def global_monitor():
 
     await client.wait_until_ready()
-    channel=client.get_channel(CHANNELS["global"])
+
+    channel = client.get_channel(CHANNELS["global"])
 
     async with aiohttp.ClientSession() as session:
 
@@ -141,24 +162,35 @@ async def global_monitor():
 
             try:
 
-                url="https://query1.finance.yahoo.com/v7/finance/quote"
+                url = "https://query1.finance.yahoo.com/v7/finance/quote"
 
-                params={"symbols":"^GSPC,^IXIC,^DJI"}
+                params = {
+                    "symbols": "^GSPC,^IXIC,^DJI"
+                }
 
-                data=await fetch_json(session,url,HEADERS,params)
+                async with session.get(url, headers=HEADERS, params=params) as r:
 
-                res=data["quoteResponse"]["result"]
+                    text = await r.text()
 
-                sp=res[0]["regularMarketPrice"]
-                nas=res[1]["regularMarketPrice"]
-                dow=res[2]["regularMarketPrice"]
+                if "quoteResponse" not in text:
+                    print("Yahoo blocked request")
+                    await asyncio.sleep(3600)
+                    continue
 
-                msg=f"""
+                data = json.loads(text)
+
+                res = data["quoteResponse"]["result"]
+
+                sp = res[0]["regularMarketPrice"]
+                nas = res[1]["regularMarketPrice"]
+                dow = res[2]["regularMarketPrice"]
+
+                msg = f"""
 🌍 **GLOBAL MARKETS**
 
 S&P500: {sp}
 NASDAQ: {nas}
-DOW JONES: {dow}
+DOW: {dow}
 
 <@&{ROLE_ID}>
 """
@@ -166,7 +198,8 @@ DOW JONES: {dow}
                 await channel.send(msg)
 
             except Exception as e:
-                print("Global Error:",e)
+
+                print("Global Error:", e)
 
             await asyncio.sleep(7200)
 
@@ -176,7 +209,8 @@ DOW JONES: {dow}
 async def commodity_monitor():
 
     await client.wait_until_ready()
-    channel=client.get_channel(CHANNELS["commodity"])
+
+    channel = client.get_channel(CHANNELS["commodity"])
 
     async with aiohttp.ClientSession() as session:
 
@@ -184,17 +218,19 @@ async def commodity_monitor():
 
             try:
 
-                gold=await fetch_json(session,"https://api.coinbase.com/v2/prices/XAU-USD/spot")
-                silver=await fetch_json(session,"https://api.coinbase.com/v2/prices/XAG-USD/spot")
+                gold = await fetch_json(session, "https://api.coinbase.com/v2/prices/XAU-USD/spot")
 
-                gold_price=gold["data"]["amount"]
-                silver_price=silver["data"]["amount"]
+                if gold is None or "data" not in gold:
+                    print("Gold API error")
+                    await asyncio.sleep(3600)
+                    continue
 
-                msg=f"""
-🛢 **COMMODITIES**
+                gold_price = gold["data"]["amount"]
+
+                msg = f"""
+🛢 **COMMODITY**
 
 Gold: ${gold_price}
-Silver: ${silver_price}
 
 <@&{ROLE_ID}>
 """
@@ -202,17 +238,19 @@ Silver: ${silver_price}
                 await channel.send(msg)
 
             except Exception as e:
-                print("Commodity Error:",e)
+
+                print("Commodity Error:", e)
 
             await asyncio.sleep(7200)
 
 
 # ---------------- WHALE ALERT ---------------- #
 
-async def whale_monitor():
+async def whale_tracker():
 
     await client.wait_until_ready()
-    channel=client.get_channel(CHANNELS["whale"])
+
+    channel = client.get_channel(CHANNELS["whale"])
 
     async with aiohttp.ClientSession() as session:
 
@@ -220,30 +258,40 @@ async def whale_monitor():
 
             try:
 
-                url="https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=20"
+                url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=20"
 
-                data=await fetch_json(session,url)
+                data = await fetch_json(session, url)
+
+                if not data:
+                    await asyncio.sleep(60)
+                    continue
 
                 for t in data:
 
-                    value=float(t["price"])*float(t["qty"])
+                    price = float(t["price"])
+                    qty = float(t["qty"])
 
-                    if value>1000000:
+                    usd_val = price * qty
 
-                        msg=f"""
+                    if usd_val > 750000:
+
+                        msg = f"""
 🐋 **WHALE ALERT**
 
-BTC Trade: ${value:,.0f}
+BTC Trade: ${usd_val:,.0f}
 
 <@&{ROLE_ID}>
 """
 
                         await channel.send(msg)
 
-            except Exception as e:
-                print("Whale Error:",e)
+                        await asyncio.sleep(5)
 
-            await asyncio.sleep(120)
+            except Exception as e:
+
+                print("Whale Error:", e)
+
+            await asyncio.sleep(60)
 
 
 # ---------------- BOT READY ---------------- #
@@ -251,13 +299,13 @@ BTC Trade: ${value:,.0f}
 @client.event
 async def on_ready():
 
-    print("BOT CONNECTED:",client.user)
+    print("BOT CONNECTED:", client.user)
 
     client.loop.create_task(psx_monitor())
     client.loop.create_task(crypto_monitor())
     client.loop.create_task(global_monitor())
     client.loop.create_task(commodity_monitor())
-    client.loop.create_task(whale_monitor())
+    client.loop.create_task(whale_tracker())
 
 
 client.run(TOKEN)

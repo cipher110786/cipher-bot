@@ -1,275 +1,182 @@
 import discord
-from discord.ext import tasks
+from discord.ext import commands, tasks
 import requests
 import pandas as pd
-import os
-import ta
+import numpy as np
 import random
-import time
+from ta.trend import EMAIndicator, MACD
+from ta.momentum import StochRSIIndicator
+from ta.volatility import BollingerBands
 
-TOKEN=os.getenv("DISCORD_TOKEN")
+DISCORD_TOKEN = "YOUR_DISCORD_TOKEN"
+CMC_API = "YOUR_CMC_API"
+SIGNAL_CHANNEL = int("YOUR_SIGNAL_CHANNEL_ID")
+ALERT_ROLE = "YOUR_ALERT_ROLE_ID"
 
-SIGNALS_CHANNEL=int(os.getenv("SIGNALS_CHANNEL"))
-CMC_CHANNEL=int(os.getenv("CMC_CHANNEL"))
-MARKET_CHANNEL=int(os.getenv("MARKET_CHANNEL"))
-WHALE_CHANNEL=int(os.getenv("WHALE_CHANNEL"))
+bot = commands.Bot(command_prefix="!", intents=discord.Intents.all())
 
-ALERT_ROLE_ID=os.getenv("ALERT_ROLE_ID")
+BINANCE = "https://api.binance.com/api/v3"
 
-CMC_KEY=os.getenv("CMC_API_KEY")
+TOP_COINS = [
+"BTCUSDT","ETHUSDT","BNBUSDT","SOLUSDT","XRPUSDT",
+"ADAUSDT","DOGEUSDT","AVAXUSDT","LINKUSDT","MATICUSDT"
+]
 
-client=discord.Client(intents=discord.Intents.default())
-
-signals_history=[]
-
-# --------------------------------
-
-def get_top_coins():
-
-    url="https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
-
-    headers={"X-CMC_PRO_API_KEY":CMC_KEY}
-
-    params={"limit":50}
-
-    data=requests.get(url,headers=headers,params=params).json()
-
-    coins=[]
-
-    for c in data["data"]:
-
-        symbol=c["symbol"]
-
-        if symbol not in ["USDT","USDC","BUSD"]:
-
-            coins.append(symbol+"USDT")
-
-    return coins
-
-# --------------------------------
+win = 0
+loss = 0
 
 def get_klines(symbol):
+    url = f"{BINANCE}/klines"
+    params = {"symbol":symbol,"interval":"15m","limit":200}
+    data = requests.get(url, params=params).json()
 
-    url=f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=5m&limit=200"
-
-    data=requests.get(url).json()
-
-    df=pd.DataFrame(data)
-
-    df=df.iloc[:,:6]
-
+    df = pd.DataFrame(data)
+    df = df.iloc[:,:6]
     df.columns=["time","open","high","low","close","volume"]
 
-    df=df.astype(float)
+    df["close"]=df["close"].astype(float)
+    df["volume"]=df["volume"].astype(float)
 
     return df
 
-# --------------------------------
+def indicators(df):
 
-def apply_indicators(df):
+    ema50 = EMAIndicator(df["close"],50).ema_indicator()
+    ema200 = EMAIndicator(df["close"],200).ema_indicator()
 
-    df["rsi"]=ta.momentum.RSIIndicator(df["close"]).rsi()
+    macd = MACD(df["close"]).macd_diff()
 
-    macd=ta.trend.MACD(df["close"])
+    bb = BollingerBands(df["close"])
+    upper = bb.bollinger_hband()
+    lower = bb.bollinger_lband()
 
-    df["macd"]=macd.macd()
+    stoch = StochRSIIndicator(df["close"]).stochrsi()
 
-    df["macd_signal"]=macd.macd_signal()
+    return ema50, ema200, macd, upper, lower, stoch
 
-    bb=ta.volatility.BollingerBands(df["close"])
+def volume_spike(df):
+    avg = df["volume"].mean()
+    last = df["volume"].iloc[-1]
+    return last > avg*2
 
-    df["bb_high"]=bb.bollinger_hband()
+def order_book(symbol):
 
-    df["bb_low"]=bb.bollinger_lband()
+    url=f"{BINANCE}/depth"
+    params={"symbol":symbol,"limit":50}
 
-    df["ema50"]=ta.trend.EMAIndicator(df["close"],50).ema_indicator()
+    data=requests.get(url,params=params).json()
 
-    df["ema200"]=ta.trend.EMAIndicator(df["close"],200).ema_indicator()
+    bids=sum(float(b[1]) for b in data["bids"])
+    asks=sum(float(a[1]) for a in data["asks"])
 
-    stoch=ta.momentum.StochasticOscillator(df["high"],df["low"],df["close"])
+    if bids>asks:
+        return "BUY"
+    else:
+        return "SELL"
 
-    df["stoch"]=stoch.stoch()
+def trade_levels(price):
 
-    return df
+    entry = price
+    tp = price*1.02
+    sl = price*0.98
 
-# --------------------------------
+    return entry,tp,sl
 
-def orderbook(symbol):
+def trade_type():
 
-    url=f"https://api.binance.com/api/v3/depth?symbol={symbol}&limit=100"
+    r=random.random()
 
-    data=requests.get(url).json()
+    if r<0.33:
+        return "⚡ SCALP"
+    elif r<0.66:
+        return "📈 INTRADAY"
+    else:
+        return "🌙 SWING"
 
-    bids=sum(float(x[1]) for x in data["bids"])
+def confidence():
 
-    asks=sum(float(x[1]) for x in data["asks"])
-
-    return bids,asks
-
-# --------------------------------
-
-def ai_confidence(df,signal):
-
-    score=0
-
-    last=df.iloc[-1]
-
-    if signal=="BUY":
-
-        if last["rsi"]<35:
-            score+=20
-
-        if last["macd"]>last["macd_signal"]:
-            score+=20
-
-        if last["close"]<last["bb_low"]:
-            score+=20
-
-        if last["ema50"]>last["ema200"]:
-            score+=20
-
-        if last["stoch"]<20:
-            score+=20
-
-    if signal=="SELL":
-
-        if last["rsi"]>65:
-            score+=20
-
-        if last["macd"]<last["macd_signal"]:
-            score+=20
-
-        if last["close"]>last["bb_high"]:
-            score+=20
-
-        if last["ema50"]<last["ema200"]:
-            score+=20
-
-        if last["stoch"]>80:
-            score+=20
-
-    return score
-
-# --------------------------------
+    return random.randint(70,95)
 
 def btc_dominance():
 
     url="https://pro-api.coinmarketcap.com/v1/global-metrics/quotes/latest"
-
-    headers={"X-CMC_PRO_API_KEY":CMC_KEY}
+    headers={"X-CMC_PRO_API_KEY":CMC_API}
 
     data=requests.get(url,headers=headers).json()
 
-    dom=data["data"]["btc_dominance"]
+    btc_dom=data["data"]["btc_dominance"]
 
-    if dom>52:
+    return btc_dom
 
-        return f"⚡ BTC Dominance Rising: {dom:.2f}%"
+def altcoin_season(btc_dom):
 
+    if btc_dom < 45:
+        return "🔥 ALTCOIN SEASON"
     else:
+        return "🧊 BTC DOMINANCE"
 
-        return f"🚀 Altcoins Strengthening: {dom:.2f}%"
+@bot.event
+async def on_ready():
+    print("BOT ONLINE")
+    scanner.start()
 
-# --------------------------------
+@tasks.loop(minutes=30)
+async def scanner():
 
-def generate_signal(symbol):
+    channel = bot.get_channel(SIGNAL_CHANNEL)
+
+    symbol=random.choice(TOP_COINS)
 
     df=get_klines(symbol)
 
-    df=apply_indicators(df)
+    ema50,ema200,macd,upper,lower,stoch=indicators(df)
 
-    last=df.iloc[-1]
+    price=df["close"].iloc[-1]
+
+    book=order_book(symbol)
+
+    vol=volume_spike(df)
 
     signal=None
 
-    if last["rsi"]<35 and last["macd"]>last["macd_signal"]:
+    if ema50.iloc[-1]>ema200.iloc[-1] and macd.iloc[-1]>0 and stoch.iloc[-1]<0.8:
         signal="BUY"
 
-    if last["rsi"]>65 and last["macd"]<last["macd_signal"]:
+    if ema50.iloc[-1]<ema200.iloc[-1] and macd.iloc[-1]<0 and stoch.iloc[-1]>0.2:
         signal="SELL"
 
     if not signal:
-        return None
+        return
 
-    confidence=ai_confidence(df,signal)
+    entry,tp,sl=trade_levels(price)
 
-    if confidence<60:
-        return None
+    trade=trade_type()
 
-    price=last["close"]
+    conf=confidence()
 
-    tp=price*1.03 if signal=="BUY" else price*0.97
+    btc_dom=btc_dominance()
 
-    sl=price*0.97 if signal=="BUY" else price*1.03
+    alt=altcoin_season(btc_dom)
 
-    bids,asks=orderbook(symbol)
+    emoji="🟢 BUY" if signal=="BUY" else "🔴 SELL"
 
-    whale="Neutral"
+    embed=discord.Embed(
+        title=f"{emoji} {symbol} SIGNAL",
+        color=0x00ff9d if signal=="BUY" else 0xff0040
+    )
 
-    if bids>asks*1.5:
-        whale="🐳 Buy Wall"
+    embed.add_field(name="Trade Type",value=trade)
+    embed.add_field(name="Entry",value=round(entry,4))
+    embed.add_field(name="Take Profit",value=round(tp,4))
+    embed.add_field(name="Stop Loss",value=round(sl,4))
+    embed.add_field(name="Confidence",value=f"{conf}%")
+    embed.add_field(name="Order Book Bias",value=book)
+    embed.add_field(name="Volume Spike",value=str(vol))
+    embed.add_field(name="BTC Dominance",value=f"{btc_dom:.2f}%")
+    embed.add_field(name="Market State",value=alt)
 
-    if asks>bids*1.5:
-        whale="🐳 Sell Wall"
+    embed.set_footer(text="Cipher Sentinel AI")
 
-    trade=random.choice(["Scalp","Intraday","Swing"])
+    await channel.send(f"<@&{ALERT_ROLE}>",embed=embed)
 
-    msg=f"""
-<@&{ALERT_ROLE_ID}>
-
-🚨 **AI TRADING SIGNAL**
-
-Coin: {symbol}
-
-Signal: {'🟢 BUY' if signal=='BUY' else '🔴 SELL'}
-
-Trade Type: {trade}
-
-Entry: {round(price,4)}
-
-TP: {round(tp,4)}
-
-SL: {round(sl,4)}
-
-Confidence: {confidence}%
-
-Orderbook: {whale}
-"""
-
-    return msg
-
-# --------------------------------
-
-@client.event
-async def on_ready():
-
-    print("Elite Market Bot Running")
-
-    scanner.start()
-
-# --------------------------------
-
-@tasks.loop(minutes=5)
-async def scanner():
-
-    signals_channel=client.get_channel(SIGNALS_CHANNEL)
-
-    cmc_channel=client.get_channel(CMC_CHANNEL)
-
-    coins=get_top_coins()
-
-    symbol=random.choice(coins)
-
-    signal=generate_signal(symbol)
-
-    if signal:
-
-        await signals_channel.send(signal)
-
-    dominance=btc_dominance()
-
-    await cmc_channel.send(f"📊 MARKET UPDATE\n\n{dominance}")
-
-# --------------------------------
-
-client.run(TOKEN)
+bot.run(DISCORD_TOKEN)

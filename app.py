@@ -1,137 +1,253 @@
 import discord
-import aiohttp
+import requests
 import asyncio
+from bs4 import BeautifulSoup
 import os
-from discord.ext import tasks
 
 TOKEN = os.getenv("TOKEN")
-
-CRYPTO_CHANNEL_ID = 1478816867828240626
-GLOBAL_CHANNEL_ID = 1478817069415010425
-ALERT_ROLE_ID = 1478820285263122572
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
-# ---------------- FETCH ---------------- #
+# CHANNEL IDs
+PSX_CHANNEL = 1478816955971665990
+NEWS_CHANNEL = 1478816955971665990
+CRYPTO_CHANNEL = 1478816867828240626
+GLOBAL_CHANNEL = 1478817069415010425
+COMMODITY_CHANNEL = 1478816867828240626
+WHALE_CHANNEL = 1478816921649545256
 
-async def fetch_json(session, url):
-    try:
-        async with session.get(url, timeout=15) as response:
-            if response.status != 200:
-                print("HTTP Error:", response.status, url)
-                return None
-            return await response.json()
-    except Exception as e:
-        print("Fetch Error:", e)
-        return None
+ROLE_ID = 1478715069453041676
 
-# ---------------- CRYPTO DASHBOARD ---------------- #
 
-@tasks.loop(minutes=15)
-async def crypto_dashboard():
+# ---------------- PSX INDEX ---------------- #
+
+async def psx_index():
+
     await client.wait_until_ready()
-    channel = client.get_channel(CRYPTO_CHANNEL_ID)
+    channel = client.get_channel(PSX_CHANNEL)
 
-    async with aiohttp.ClientSession() as session:
+    while not client.is_closed():
 
-        # CoinGecko Prices
-        cg_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,binancecoin,solana,ripple&vs_currencies=usd&include_24hr_change=true"
-        prices = await fetch_json(session, cg_url)
+        try:
 
-        # Global Market
-        global_url = "https://api.coingecko.com/api/v3/global"
-        global_data = await fetch_json(session, global_url)
+            url = "https://dps.psx.com.pk/indices/KSE100"
+            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"})
+            data = r.json()
 
-        # Fear & Greed
-        fear_url = "https://api.alternative.me/fng/?limit=1"
-        fear_data = await fetch_json(session, fear_url)
+            value = data["data"]["value"]
+            change = data["data"]["change"]
+            percent = data["data"]["percent_change"]
 
-        # Funding Rate (Binance)
-        funding_url = "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
-        funding_data = await fetch_json(session, funding_url)
+            msg = f"""
+📊 **PSX MARKET UPDATE**
 
-    if not prices or not global_data:
-        return
+KSE-100 Index: **{value}**
+Change: **{change} ({percent}%)**
 
-    btc = prices["bitcoin"]["usd"]
-    eth = prices["ethereum"]["usd"]
-    bnb = prices["binancecoin"]["usd"]
-    sol = prices["solana"]["usd"]
-    xrp = prices["ripple"]["usd"]
+<@&{ROLE_ID}>
+"""
 
-    market_cap = global_data["data"]["total_market_cap"]["usd"]
-    volume = global_data["data"]["total_volume"]["usd"]
+            await channel.send(msg)
 
-    fear_value = fear_data["data"][0]["value"] if fear_data else "N/A"
-    funding_rate = float(funding_data["lastFundingRate"]) * 100 if funding_data else 0
+        except Exception as e:
+            print("PSX Error:", e)
 
-    embed = discord.Embed(
-        title="📊 Institutional Crypto Dashboard (Hourly)",
-        color=0x00ffcc
-    )
+        await asyncio.sleep(3600)
 
-    embed.add_field(name="🟡 BTC", value=f"${btc:,}", inline=True)
-    embed.add_field(name="🟣 ETH", value=f"${eth:,}", inline=True)
-    embed.add_field(name="🟠 BNB", value=f"${bnb:,}", inline=True)
-    embed.add_field(name="🟢 SOL", value=f"${sol:,}", inline=True)
-    embed.add_field(name="🔵 XRP", value=f"${xrp:,}", inline=True)
 
-    embed.add_field(name="🌍 Market Cap", value=f"${market_cap:,.0f}", inline=False)
-    embed.add_field(name="📈 24h Volume", value=f"${volume:,.0f}", inline=False)
-    embed.add_field(name="😱 Fear & Greed", value=fear_value, inline=True)
-    embed.add_field(name="💸 BTC Funding", value=f"{funding_rate:.4f}%", inline=True)
+# ---------------- PSX NEWS ---------------- #
 
-    embed.set_footer(text="Free Mode • Conservative API Usage")
+async def psx_news():
 
-    await channel.send(f"<@&{ALERT_ROLE_ID}>", embed=embed)
+    await client.wait_until_ready()
+    channel = client.get_channel(NEWS_CHANNEL)
+
+    while not client.is_closed():
+
+        try:
+
+            url = "https://dps.psx.com.pk/news"
+            r = requests.get(url)
+            soup = BeautifulSoup(r.text,"html.parser")
+
+            headlines = soup.find_all("h3")[:5]
+
+            news = "\n".join([f"• {h.text}" for h in headlines])
+
+            msg = f"""
+📰 **PSX MARKET NEWS**
+
+{news}
+
+<@&{ROLE_ID}>
+"""
+
+            await channel.send(msg)
+
+        except Exception as e:
+            print("News Error:", e)
+
+        await asyncio.sleep(7200)
+
+
+# ---------------- CRYPTO ---------------- #
+
+async def crypto_update():
+
+    await client.wait_until_ready()
+    channel = client.get_channel(CRYPTO_CHANNEL)
+
+    while not client.is_closed():
+
+        try:
+
+            url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=usd"
+
+            data = requests.get(url).json()
+
+            btc = data["bitcoin"]["usd"]
+            eth = data["ethereum"]["usd"]
+            sol = data["solana"]["usd"]
+            xrp = data["ripple"]["usd"]
+
+            msg = f"""
+🪙 **CRYPTO MARKET**
+
+BTC : ${btc}
+ETH : ${eth}
+SOL : ${sol}
+XRP : ${xrp}
+
+<@&{ROLE_ID}>
+"""
+
+            await channel.send(msg)
+
+        except Exception as e:
+            print("Crypto Error:",e)
+
+        await asyncio.sleep(1800)
+
+
+# ---------------- COMMODITIES ---------------- #
+
+async def commodities():
+
+    await client.wait_until_ready()
+    channel = client.get_channel(COMMODITY_CHANNEL)
+
+    while not client.is_closed():
+
+        try:
+
+            gold = requests.get("https://api.coinbase.com/v2/prices/XAU-USD/spot").json()
+            gold_price = gold["data"]["amount"]
+
+            msg = f"""
+🛢 **COMMODITIES**
+
+Gold : ${gold_price}
+
+<@&{ROLE_ID}>
+"""
+
+            await channel.send(msg)
+
+        except Exception as e:
+            print("Commodity Error:",e)
+
+        await asyncio.sleep(3600)
+
+
+# ---------------- GLOBAL MARKETS ---------------- #
+
+async def global_market():
+
+    await client.wait_until_ready()
+    channel = client.get_channel(GLOBAL_CHANNEL)
+
+    while not client.is_closed():
+
+        try:
+
+            url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EGSPC,%5EIXIC,%5EDJI"
+            r = requests.get(url)
+            data = r.json()
+
+            sp = data["quoteResponse"]["result"][0]["regularMarketPrice"]
+            nasdaq = data["quoteResponse"]["result"][1]["regularMarketPrice"]
+            dow = data["quoteResponse"]["result"][2]["regularMarketPrice"]
+
+            msg = f"""
+🌍 **GLOBAL MARKETS**
+
+S&P 500 : {sp}
+NASDAQ : {nasdaq}
+DOW : {dow}
+
+<@&{ROLE_ID}>
+"""
+
+            await channel.send(msg)
+
+        except Exception as e:
+            print("Global Error:",e)
+
+        await asyncio.sleep(3600)
+
 
 # ---------------- WHALE ALERT ---------------- #
 
-@tasks.loop(minutes=60)
 async def whale_alert():
+
     await client.wait_until_ready()
-    channel = client.get_channel(GLOBAL_CHANNEL_ID)
+    channel = client.get_channel(WHALE_CHANNEL)
 
-    url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=20"
+    while not client.is_closed():
 
-    async with aiohttp.ClientSession() as session:
-        data = await fetch_json(session, url)
+        try:
 
-    if not data:
-        return
+            url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=50"
 
-    whales = [t for t in data if float(t["qty"]) > 10]
+            trades = requests.get(url).json()
 
-    if not whales:
-        return
+            for t in trades:
 
-    for trade in whales:
-        qty = float(trade["qty"])
-        price = float(trade["price"])
-        value = qty * price
+                value = float(t["price"]) * float(t["qty"])
 
-        msg = (
-            f"<@&{ALERT_ROLE_ID}> 🚨 **BTC Whale Trade Detected**\n"
-            f"Amount: {qty} BTC\n"
-            f"Value: ${value:,.0f}"
-        )
+                if value > 500000:
 
-        await channel.send(msg)
+                    msg = f"""
+🐋 **WHALE ALERT**
 
-# ---------------- READY ---------------- #
+Large BTC trade detected
+Value : ${value:,.0f}
+
+<@&{ROLE_ID}>
+"""
+
+                    await channel.send(msg)
+
+        except Exception as e:
+            print("Whale Error:",e)
+
+        await asyncio.sleep(300)
+
+
+# ---------------- BOT READY ---------------- #
 
 @client.event
 async def on_ready():
-    print(f"Bot online as {client.user}")
 
-    test_channel = client.get_channel(CRYPTO_CHANNEL_ID)
-    if test_channel:
-        await test_channel.send("✅ Free Institutional Bot Connected.")
+    print("Bot Online")
 
-    crypto_dashboard.start()
-    whale_alert.start()
+    client.loop.create_task(psx_index())
+    client.loop.create_task(psx_news())
+    client.loop.create_task(crypto_update())
+    client.loop.create_task(global_market())
+    client.loop.create_task(commodities())
+    client.loop.create_task(whale_alert())
+
 
 client.run(TOKEN)
-
-

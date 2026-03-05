@@ -1,188 +1,167 @@
 import discord
-from discord.ext import commands, tasks
+from discord.ext import tasks
 import requests
 import os
-import random
+import pandas as pd
+import numpy as np
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-CMC_API = os.getenv("CMC_API_KEY")
+CMC_API = os.getenv("CMC_API")
 
-CRYPTO_CHANNEL = int(os.getenv("CRYPTO_CHANNEL", "0"))
-CMC_CHANNEL = int(os.getenv("CMC_CHANNEL", "0"))
-NEWS_CHANNEL = int(os.getenv("NEWS_CHANNEL", "0"))
-WHALE_CHANNEL = int(os.getenv("WHALE_CHANNEL", "0"))
+CMC_CHANNEL = int(os.getenv("CMC_CHANNEL"))
+SIGNAL_CHANNEL = int(os.getenv("SIGNAL_CHANNEL"))
+WHALE_CHANNEL = int(os.getenv("WHALE_CHANNEL"))
+MARKET_CHANNEL = int(os.getenv("MARKET_CHANNEL"))
 
-intents = discord.Intents.default()
-bot = commands.Bot(command_prefix="!", intents=intents)
+client = discord.Client(intents=discord.Intents.default())
 
-@bot.event
+
+def get_candles(symbol):
+
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}USDT&interval=15m&limit=100"
+    data = requests.get(url).json()
+
+    closes = [float(c[4]) for c in data]
+
+    return pd.Series(closes)
+
+
+def MACD(series):
+
+    ema12 = series.ewm(span=12).mean()
+    ema26 = series.ewm(span=26).mean()
+
+    macd = ema12 - ema26
+    signal = macd.ewm(span=9).mean()
+
+    return macd.iloc[-1], signal.iloc[-1]
+
+
+def bollinger(series):
+
+    sma = series.rolling(20).mean()
+    std = series.rolling(20).std()
+
+    upper = sma + (std * 2)
+    lower = sma - (std * 2)
+
+    price = series.iloc[-1]
+
+    if price > upper.iloc[-1]:
+        return "OVERBOUGHT"
+
+    if price < lower.iloc[-1]:
+        return "OVERSOLD"
+
+    return "NORMAL"
+
+
+def stochastic_rsi(series):
+
+    delta = series.diff()
+
+    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+
+    rs = gain / loss
+
+    rsi = 100 - (100 / (1 + rs))
+
+    stoch = (rsi - rsi.rolling(14).min()) / (rsi.rolling(14).max() - rsi.rolling(14).min())
+
+    return stoch.iloc[-1]
+
+
+def order_book(symbol):
+
+    try:
+        url = f"https://api.binance.com/api/v3/depth?symbol={symbol}USDT&limit=50"
+        data = requests.get(url).json()
+
+        bids = sum(float(b[1]) for b in data["bids"])
+        asks = sum(float(a[1]) for a in data["asks"])
+
+        if bids > asks:
+            return "BUY"
+
+        return "SELL"
+
+    except:
+        return "UNKNOWN"
+
+
+@client.event
 async def on_ready():
-    print(f"Logged in as {bot.user}")
 
-    crypto_updates.start()
-    cmc_updates.start()
-    news_updates.start()
-    whale_updates.start()
+    print("Bot connected")
 
-# =================================
-# BITCOIN MARKET INTELLIGENCE
-# =================================
+    market_loop.start()
+
 
 @tasks.loop(minutes=30)
-async def crypto_updates():
+async def market_loop():
 
-    channel = bot.get_channel(CRYPTO_CHANNEL)
+    headers = {"X-CMC_PRO_API_KEY": CMC_API}
 
-    try:
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
 
-        url = "https://api.binance.com/api/v3/ticker/24hr?symbol=BTCUSDT"
-        r = requests.get(url).json()
+    params = {"limit": 100, "convert": "USD"}
 
-        price = float(r["lastPrice"])
-        change = float(r["priceChangePercent"])
-        volume = float(r["volume"])
+    data = requests.get(url, headers=headers, params=params).json()["data"]
 
-        sentiment = "Bullish 📈" if change > 0 else "Bearish 📉"
+    cmc = client.get_channel(CMC_CHANNEL)
+    signals = client.get_channel(SIGNAL_CHANNEL)
+    whale = client.get_channel(WHALE_CHANNEL)
+    market = client.get_channel(MARKET_CHANNEL)
 
-        msg = f"""
-🚨 **Bitcoin Market Intelligence**
+    cmc_msg = "📊 **Top Market Coins**\n\n"
+    signal_msg = "🤖 **AI Trading Signals**\n\n"
+    whale_msg = "🐋 **High Volume Activity**\n\n"
 
-💰 Price: ${price:,.2f}
-📊 24h Change: {change:.2f}%
-📦 Volume: {volume:,.0f}
+    for coin in data[:40]:
 
-🧠 Market Sentiment: **{sentiment}**
+        symbol = coin["symbol"]
+        price = coin["quote"]["USD"]["price"]
+        change = coin["quote"]["USD"]["percent_change_24h"]
+        volume = coin["quote"]["USD"]["volume_24h"]
 
-#crypto #bitcoin
-"""
+        emoji = "🟢" if change > 0 else "🔴"
 
-        await channel.send(msg)
+        cmc_msg += f"{emoji} {symbol} ${price:.2f} ({change:.2f}%)\n"
 
-    except Exception as e:
-        print("Crypto Error:", e)
+        try:
 
-# =================================
-# TOP COINS FROM CMC
-# =================================
+            series = get_candles(symbol)
 
-@tasks.loop(minutes=30)
-async def cmc_updates():
+            macd, signal = MACD(series)
+            bb = bollinger(series)
+            stoch = stochastic_rsi(series)
+            book = order_book(symbol)
 
-    channel = bot.get_channel(CMC_CHANNEL)
+            if macd > signal and stoch < 0.2 and bb == "OVERSOLD" and book == "BUY":
 
-    try:
+                signal_msg += f"🚀 BUY {symbol}\nMACD Bullish\nStochRSI Oversold\nOrderBook BUY\n\n"
 
-        url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/listings/latest"
+            if macd < signal and stoch > 0.8 and bb == "OVERBOUGHT" and book == "SELL":
 
-        headers = {
-            "X-CMC_PRO_API_KEY": CMC_API
-        }
+                signal_msg += f"📉 SELL {symbol}\nMACD Bearish\nStochRSI Overbought\nOrderBook SELL\n\n"
 
-        params = {
-            "start": "1",
-            "limit": "10",
-            "convert": "USD"
-        }
+        except:
+            pass
 
-        r = requests.get(url, headers=headers, params=params).json()
+        if volume > 800000000:
 
-        coins = r["data"]
+            whale_msg += f"{symbol} Volume ${volume:,.0f}\n"
 
-        msg = "📊 **Top 10 Cryptocurrencies**\n\n"
+    await cmc.send(cmc_msg)
 
-        for c in coins[:10]:
+    if len(signal_msg) > 40:
+        await signals.send(signal_msg)
 
-            name = c["name"]
-            price = c["quote"]["USD"]["price"]
-            change = c["quote"]["USD"]["percent_change_24h"]
+    if len(whale_msg) > 30:
+        await whale.send(whale_msg)
 
-            emoji = "🟢" if change > 0 else "🔴"
+    await market.send("🌎 Market scan completed. Signals generated.")
 
-            msg += f"{emoji} {name} — ${price:,.2f} ({change:.2f}%)\n"
 
-        await channel.send(msg)
-
-    except Exception as e:
-        print("CMC Error:", e)
-
-# =================================
-# CRYPTO NEWS + FEAR GREED
-# =================================
-
-@tasks.loop(minutes=30)
-async def news_updates():
-
-    channel = bot.get_channel(NEWS_CHANNEL)
-
-    try:
-
-        news_url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
-        news = requests.get(news_url).json()
-
-        article = news["Data"][0]
-
-        title = article["title"]
-        link = article["url"]
-
-        fear_url = "https://api.alternative.me/fng/"
-        fear = requests.get(fear_url).json()
-
-        index = fear["data"][0]["value"]
-        sentiment = fear["data"][0]["value_classification"]
-
-        msg = f"""
-📰 **Crypto News**
-
-{title}
-
-🔗 {link}
-
-😱 **Fear & Greed Index**
-
-Value: {index}
-Sentiment: **{sentiment}**
-"""
-
-        await channel.send(msg)
-
-    except Exception as e:
-        print("News Error:", e)
-
-# =================================
-# WHALE ALERTS
-# =================================
-
-@tasks.loop(minutes=30)
-async def whale_updates():
-
-    channel = bot.get_channel(WHALE_CHANNEL)
-
-    try:
-
-        url = "https://api.whale-alert.io/v1/transactions?api_key=demo&min_value=10000000"
-        r = requests.get(url).json()
-
-        if "transactions" in r:
-
-            tx = r["transactions"][0]
-
-            amount = tx["amount"]
-            symbol = tx["symbol"]
-            usd = tx["amount_usd"]
-            blockchain = tx["blockchain"]
-
-            msg = f"""
-🐋 **Whale Transfer Detected**
-
-{amount} {symbol}
-
-💰 Value: ${usd:,.0f}
-⛓ Blockchain: {blockchain}
-"""
-
-            await channel.send(msg)
-
-    except Exception as e:
-        print("Whale Error:", e)
-
-bot.run(TOKEN)
+client.run(TOKEN)

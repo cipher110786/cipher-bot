@@ -1,243 +1,141 @@
 import discord
+from discord.ext import commands, tasks
 import aiohttp
-import asyncio
 import os
 
-TOKEN = os.getenv("TOKEN")
-CMC = os.getenv("CMC_API_KEY")
-FMP = os.getenv("FMP_API_KEY")
+TOKEN = os.getenv("DISCORD_TOKEN")
+CMC_API = os.getenv("CMC_API_KEY")
+BINANCE_KEY = os.getenv("BINANCE_API_KEY")
 
-ROLE = 1478820285263122572
-
-CHANNEL = {
-"psx":1478816955971665990,
-"crypto":1478816867828240626,
-"global":1478817069415010425,
-"commod":1478816867828240626,
-"whale":1478816921649545256
-}
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 
 intents = discord.Intents.default()
-bot = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
-# -------- CRYPTO --------
 
-async def crypto():
+# -----------------------------
+# FETCH CRYPTO DATA (BINANCE)
+# -----------------------------
+async def get_crypto():
+    url = "https://api.binance.com/api/v3/ticker/price"
 
- await bot.wait_until_ready()
- ch = bot.get_channel(CHANNEL["crypto"])
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
 
- url="https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
+    btc = next(x for x in data if x["symbol"] == "BTCUSDT")
+    eth = next(x for x in data if x["symbol"] == "ETHUSDT")
 
- headers={"X-CMC_PRO_API_KEY":CMC}
+    return f"""
+🚀 **Crypto Update**
 
- params={"symbol":"BTC,ETH,SOL,BNB,XRP"}
-
- while not bot.is_closed():
-
-  try:
-   async with aiohttp.ClientSession() as s:
-    async with s.get(url,headers=headers,params=params) as r:
-
-     j=await r.json()
-
-     btc=j["data"]["BTC"]["quote"]["USD"]["price"]
-     eth=j["data"]["ETH"]["quote"]["USD"]["price"]
-     sol=j["data"]["SOL"]["quote"]["USD"]["price"]
-
-     msg=f"""
-🪙 **CRYPTO MARKET**
-
-BTC : ${btc:,.0f}
-ETH : ${eth:,.0f}
-SOL : ${sol:,.0f}
-
-<@&{ROLE}>
+BTC: ${btc['price']}
+ETH: ${eth['price']}
 """
 
-     await ch.send(msg)
 
-  except Exception as e:
-   print("Crypto error",e)
+# -----------------------------
+# FETCH COINMARKETCAP
+# -----------------------------
+async def get_cmc():
+    url = "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest"
 
-  await asyncio.sleep(900)
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API
+    }
 
-# -------- GLOBAL --------
+    params = {
+        "symbol": "BTC,ETH"
+    }
 
-async def global_markets():
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers, params=params) as resp:
+            data = await resp.json()
 
- await bot.wait_until_ready()
- ch = bot.get_channel(CHANNEL["global"])
+    btc = data["data"]["BTC"]["quote"]["USD"]["price"]
+    eth = data["data"]["ETH"]["quote"]["USD"]["price"]
 
- while not bot.is_closed():
+    return f"""
+📊 **CoinMarketCap**
 
-  try:
-   async with aiohttp.ClientSession() as s:
-
-    url=f"https://financialmodelingprep.com/api/v3/quote/%5EGSPC,%5EDJI,%5EIXIC?apikey={FMP}"
-
-    async with s.get(url) as r:
-
-     j=await r.json()
-
-     sp=j[0]["price"]
-     dj=j[1]["price"]
-     nq=j[2]["price"]
-
-     msg=f"""
-🌍 **GLOBAL MARKETS**
-
-S&P500 : {sp}
-Dow Jones : {dj}
-Nasdaq : {nq}
-
-<@&{ROLE}>
+BTC: ${btc:,.2f}
+ETH: ${eth:,.2f}
 """
 
-     await ch.send(msg)
 
-  except Exception as e:
-   print("Global error",e)
+# -----------------------------
+# WHALE ALERT
+# -----------------------------
+async def get_whale():
+    url = "https://api.whale-alert.io/v1/transactions?min_value=5000000"
 
-  await asyncio.sleep(1800)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
 
-# -------- COMMODITIES --------
+    if "transactions" not in data:
+        return "🐋 No whale activity detected."
 
-async def commodities():
+    tx = data["transactions"][0]
 
- await bot.wait_until_ready()
- ch = bot.get_channel(CHANNEL["commod"])
+    return f"""
+🐋 **Whale Alert**
 
- while not bot.is_closed():
-
-  try:
-   async with aiohttp.ClientSession() as s:
-
-    url="https://api.coincap.io/v2/assets"
-
-    async with s.get(url) as r:
-
-     j=await r.json()
-
-     gold="n/a"
-     silver="n/a"
-
-     for a in j["data"]:
-
-      if a["id"]=="bitcoin":
-       btc=a["priceUsd"]
-
-     msg=f"""
-🛢 **COMMODITIES SNAPSHOT**
-
-(Using crypto proxy)
-
-BTC price (market risk proxy)
-
-{btc}
-
-<@&{ROLE}>
+{tx['amount']} {tx['symbol']}
+From: {tx['from']['owner']}
+To: {tx['to']['owner']}
 """
 
-     await ch.send(msg)
 
-  except Exception as e:
-   print("Commodity error",e)
+# -----------------------------
+# PSX DATA
+# -----------------------------
+async def get_psx():
+    url = "https://dps.psx.com.pk/indices/KSE100"
 
-  await asyncio.sleep(3600)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            data = await resp.json()
 
-# -------- PSX --------
+    index = data["data"]["value"]
 
-async def psx():
+    return f"""
+🇵🇰 **PSX Update**
 
- await bot.wait_until_ready()
- ch = bot.get_channel(CHANNEL["psx"])
-
- while not bot.is_closed():
-
-  try:
-   async with aiohttp.ClientSession() as s:
-
-    url="https://dps.psx.com.pk/indices/KSE100"
-
-    async with s.get(url) as r:
-
-     text=await r.text()
-
-     if "data" in text:
-
-      import json
-
-      j=json.loads(text)
-
-      val=j["data"]["value"]
-      chg=j["data"]["change"]
-      pct=j["data"]["percent_change"]
-
-      msg=f"""
-🇵🇰 **PSX MARKET**
-
-KSE100 : {val}
-Change : {chg} ({pct}%)
-
-<@&{ROLE}>
+KSE-100 Index: {index}
 """
 
-      await ch.send(msg)
 
-  except Exception as e:
-   print("PSX error",e)
+# -----------------------------
+# LOOP EVERY 30 MINUTES
+# -----------------------------
+@tasks.loop(minutes=30)
+async def market_updates():
 
-  await asyncio.sleep(3600)
+    channel = bot.get_channel(CHANNEL_ID)
 
-# -------- WHALE --------
+    try:
+        crypto = await get_crypto()
+        cmc = await get_cmc()
+        whale = await get_whale()
+        psx = await get_psx()
 
-async def whale():
+        await channel.send(crypto)
+        await channel.send(cmc)
+        await channel.send(whale)
+        await channel.send(psx)
 
- await bot.wait_until_ready()
- ch = bot.get_channel(CHANNEL["whale"])
+    except Exception as e:
+        print("Update error:", e)
 
- while not bot.is_closed():
 
-  try:
-   async with aiohttp.ClientSession() as s:
-
-    url="https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=20"
-
-    async with s.get(url) as r:
-
-     j=await r.json()
-
-     for t in j:
-
-      usd=float(t["price"])*float(t["qty"])
-
-      if usd>1000000:
-
-       msg=f"""
-🐋 **BTC WHALE TRADE**
-
-Value : ${usd:,.0f}
-
-<@&{ROLE}>
-"""
-
-       await ch.send(msg)
-
-  except Exception as e:
-   print("Whale error",e)
-
-  await asyncio.sleep(60)
-
+# -----------------------------
+# BOT READY
+# -----------------------------
 @bot.event
 async def on_ready():
+    print(f"BOT CONNECTED: {bot.user}")
+    market_updates.start()
 
- print("BOT CONNECTED:",bot.user)
-
- bot.loop.create_task(crypto())
- bot.loop.create_task(global_markets())
- bot.loop.create_task(commodities())
- bot.loop.create_task(psx())
- bot.loop.create_task(whale())
 
 bot.run(TOKEN)

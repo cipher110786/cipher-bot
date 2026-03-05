@@ -1,254 +1,228 @@
 import discord
-import requests
+import aiohttp
 import asyncio
-from bs4 import BeautifulSoup
 import os
+from datetime import datetime
+from bs4 import BeautifulSoup
 
 TOKEN = os.getenv("TOKEN")
+CMC_API = os.getenv("CMC_API")
+
+ROLE_ID = 1478820285263122572
+
+CHANNELS = {
+    "psx": 1478816955971665990,
+    "crypto": 1478816867828240626,
+    "global": 1478817069415010425,
+    "whale": 1478816921649545256,
+    "news": 1478816955971665990
+}
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0"
+}
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 
-# CHANNEL IDs
-PSX_CHANNEL = 1478816955971665990
-NEWS_CHANNEL = 1478816955971665990
-CRYPTO_CHANNEL = 1478816867828240626
-GLOBAL_CHANNEL = 1478817069415010425
-COMMODITY_CHANNEL = 1478816867828240626
-WHALE_CHANNEL = 1478816921649545256
+# ----------------------------------
 
-ROLE_ID = 1478820285263122572
+async def safe_json(session, url, headers=None, params=None):
+    try:
+        async with session.get(url, headers=headers, params=params) as r:
+            return await r.json()
+    except Exception as e:
+        print(f"Fetch error {url}: {e}")
+        return None
 
+# ----------------------------------
+# PSX INDEX + NEWS
+# ----------------------------------
 
-# ---------------- PSX INDEX ---------------- #
-
-async def psx_index():
-
+async def psx_monitor():
     await client.wait_until_ready()
-    channel = client.get_channel(PSX_CHANNEL)
+    channel = client.get_channel(CHANNELS["psx"])
 
-    while not client.is_closed():
+    async with aiohttp.ClientSession() as session:
+        while not client.is_closed():
+            try:
 
-        try:
+                # KSE100
+                data = await safe_json(
+                    session,
+                    "https://dps.psx.com.pk/indices/KSE100"
+                )
 
-            url = "https://dps.psx.com.pk/indices/KSE100"
-            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"})
-            data = r.json()
+                if data and "data" in data:
+                    v = data["data"]["value"]
+                    c = data["data"]["change"]
+                    p = data["data"]["percent_change"]
 
-            value = data["data"]["value"]
-            change = data["data"]["change"]
-            percent = data["data"]["percent_change"]
+                    await channel.send(
+                        f"📊 **PSX UPDATE**\n"
+                        f"KSE100: **{v}**\n"
+                        f"Change: {c} ({p}%)\n"
+                        f"<@&{ROLE_ID}>"
+                    )
 
-            msg = f"""
-📊 **PSX MARKET UPDATE**
+                # PSX News
+                async with session.get("https://dps.psx.com.pk/news") as r:
+                    soup = BeautifulSoup(await r.text(), "html.parser")
 
-KSE-100 Index: **{value}**
-Change: **{change} ({percent}%)**
+                    headlines = [
+                        h.text.strip()
+                        for h in soup.find_all("h3")[:3]
+                    ]
 
-<@&{ROLE_ID}>
-"""
+                    if headlines:
+                        msg = "\n".join([f"• {h}" for h in headlines])
 
-            await channel.send(msg)
+                        await channel.send(
+                            f"📰 **PSX NEWS**\n{msg}\n<@&{ROLE_ID}>"
+                        )
 
-        except Exception as e:
-            print("PSX Error:", e)
+            except Exception as e:
+                print("PSX Error:", e)
 
-        await asyncio.sleep(3600)
+            await asyncio.sleep(3600)
 
+# ----------------------------------
+# CRYPTO MARKET (COINMARKETCAP)
+# ----------------------------------
 
-# ---------------- PSX NEWS ---------------- #
-
-async def psx_news():
-
+async def crypto_market():
     await client.wait_until_ready()
-    channel = client.get_channel(NEWS_CHANNEL)
 
-    while not client.is_closed():
+    channel = client.get_channel(CHANNELS["crypto"])
 
-        try:
+    headers = {
+        "X-CMC_PRO_API_KEY": CMC_API
+    }
 
-            url = "https://dps.psx.com.pk/news"
-            r = requests.get(url)
-            soup = BeautifulSoup(r.text,"html.parser")
+    async with aiohttp.ClientSession() as session:
+        while not client.is_closed():
 
-            headlines = soup.find_all("h3")[:5]
+            try:
 
-            news = "\n".join([f"• {h.text}" for h in headlines])
+                data = await safe_json(
+                    session,
+                    "https://pro-api.coinmarketcap.com/v1/cryptocurrency/quotes/latest",
+                    headers=headers,
+                    params={"symbol": "BTC,ETH,SOL"}
+                )
 
-            msg = f"""
-📰 **PSX MARKET NEWS**
+                if data:
 
-{news}
+                    btc = data["data"]["BTC"]["quote"]["USD"]["price"]
+                    eth = data["data"]["ETH"]["quote"]["USD"]["price"]
+                    sol = data["data"]["SOL"]["quote"]["USD"]["price"]
 
-<@&{ROLE_ID}>
-"""
+                    await channel.send(
+                        f"🪙 **CRYPTO MARKET**\n"
+                        f"BTC: ${btc:,.0f}\n"
+                        f"ETH: ${eth:,.0f}\n"
+                        f"SOL: ${sol:,.0f}\n"
+                        f"<@&{ROLE_ID}>"
+                    )
 
-            await channel.send(msg)
+            except Exception as e:
+                print("Crypto error:", e)
 
-        except Exception as e:
-            print("News Error:", e)
+            await asyncio.sleep(1800)
 
-        await asyncio.sleep(7200)
-
-
-# ---------------- CRYPTO ---------------- #
-
-async def crypto_update():
-
-    await client.wait_until_ready()
-    channel = client.get_channel(CRYPTO_CHANNEL)
-
-    while not client.is_closed():
-
-        try:
-
-            url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum,solana,ripple&vs_currencies=usd"
-
-            data = requests.get(url).json()
-
-            btc = data["bitcoin"]["usd"]
-            eth = data["ethereum"]["usd"]
-            sol = data["solana"]["usd"]
-            xrp = data["ripple"]["usd"]
-
-            msg = f"""
-🪙 **CRYPTO MARKET**
-
-BTC : ${btc}
-ETH : ${eth}
-SOL : ${sol}
-XRP : ${xrp}
-
-<@&{ROLE_ID}>
-"""
-
-            await channel.send(msg)
-
-        except Exception as e:
-            print("Crypto Error:",e)
-
-        await asyncio.sleep(1800)
-
-
-# ---------------- COMMODITIES ---------------- #
-
-async def commodities():
-
-    await client.wait_until_ready()
-    channel = client.get_channel(COMMODITY_CHANNEL)
-
-    while not client.is_closed():
-
-        try:
-
-            gold = requests.get("https://api.coinbase.com/v2/prices/XAU-USD/spot").json()
-            gold_price = gold["data"]["amount"]
-
-            msg = f"""
-🛢 **COMMODITIES**
-
-Gold : ${gold_price}
-
-<@&{ROLE_ID}>
-"""
-
-            await channel.send(msg)
-
-        except Exception as e:
-            print("Commodity Error:",e)
-
-        await asyncio.sleep(3600)
-
-
-# ---------------- GLOBAL MARKETS ---------------- #
+# ----------------------------------
+# GLOBAL MARKETS
+# ----------------------------------
 
 async def global_market():
-
     await client.wait_until_ready()
-    channel = client.get_channel(GLOBAL_CHANNEL)
 
-    while not client.is_closed():
+    channel = client.get_channel(CHANNELS["global"])
 
-        try:
+    async with aiohttp.ClientSession() as session:
 
-            url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EGSPC,%5EIXIC,%5EDJI"
-            r = requests.get(url)
-            data = r.json()
+        while not client.is_closed():
 
-            sp = data["quoteResponse"]["result"][0]["regularMarketPrice"]
-            nasdaq = data["quoteResponse"]["result"][1]["regularMarketPrice"]
-            dow = data["quoteResponse"]["result"][2]["regularMarketPrice"]
+            try:
 
-            msg = f"""
-🌍 **GLOBAL MARKETS**
+                url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=%5EGSPC,%5EIXIC,%5EDJI"
 
-S&P 500 : {sp}
-NASDAQ : {nasdaq}
-DOW : {dow}
+                data = await safe_json(session, url)
 
-<@&{ROLE_ID}>
-"""
+                if data:
 
-            await channel.send(msg)
+                    r = data["quoteResponse"]["result"]
 
-        except Exception as e:
-            print("Global Error:",e)
+                    sp = r[0]["regularMarketPrice"]
+                    nq = r[1]["regularMarketPrice"]
+                    dj = r[2]["regularMarketPrice"]
 
-        await asyncio.sleep(3600)
+                    await channel.send(
+                        f"🌍 **GLOBAL MARKETS**\n"
+                        f"S&P500: {sp}\n"
+                        f"NASDAQ: {nq}\n"
+                        f"DOW: {dj}\n"
+                        f"<@&{ROLE_ID}>"
+                    )
 
+            except Exception as e:
+                print("Global error:", e)
 
-# ---------------- WHALE ALERT ---------------- #
+            await asyncio.sleep(3600)
 
-async def whale_alert():
+# ----------------------------------
+# WHALE ALERTS
+# ----------------------------------
 
+async def whale_alerts():
     await client.wait_until_ready()
-    channel = client.get_channel(WHALE_CHANNEL)
 
-    while not client.is_closed():
+    channel = client.get_channel(CHANNELS["whale"])
 
-        try:
+    async with aiohttp.ClientSession() as session:
 
-            url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=50"
+        while not client.is_closed():
 
-            trades = requests.get(url).json()
+            try:
 
-            for t in trades:
+                url = "https://api.binance.com/api/v3/trades?symbol=BTCUSDT&limit=50"
 
-                value = float(t["price"]) * float(t["qty"])
+                data = await safe_json(session, url)
 
-                if value > 500000:
+                if data:
 
-                    msg = f"""
-🐋 **WHALE ALERT**
+                    for trade in data:
 
-Large BTC trade detected
-Value : ${value:,.0f}
+                        value = float(trade["price"]) * float(trade["qty"])
 
-<@&{ROLE_ID}>
-"""
+                        if value > 1000000:
 
-                    await channel.send(msg)
+                            await channel.send(
+                                f"🐋 **WHALE ALERT**\n"
+                                f"Large BTC trade detected\n"
+                                f"Value: ${value:,.0f}\n"
+                                f"<@&{ROLE_ID}>"
+                            )
 
-        except Exception as e:
-            print("Whale Error:",e)
+                            await asyncio.sleep(5)
 
-        await asyncio.sleep(300)
+            except Exception as e:
+                print("Whale error:", e)
 
+            await asyncio.sleep(120)
 
-# ---------------- BOT READY ---------------- #
+# ----------------------------------
+# BOT READY
+# ----------------------------------
 
 @client.event
 async def on_ready():
 
-    print("Bot Online")
+    print(f"Bot Online: {client.user}")
 
-    client.loop.create_task(psx_index())
-    client.loop.create_task(psx_news())
-    client.loop.create_task(crypto_update())
+    client.loop.create_task(psx_monitor())
+    client.loop.create_task(crypto_market())
     client.loop.create_task(global_market())
-    client.loop.create_task(commodities())
-    client.loop.create_task(whale_alert())
-
+    client.loop.create_task(whale_alerts())
 
 client.run(TOKEN)
-

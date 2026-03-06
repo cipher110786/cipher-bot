@@ -7,18 +7,28 @@ import ta
 import random
 import os
 
-# ================================
-# ENV VARIABLES (RAILWAY)
-# ================================
+# ===============================
+# ENV VARIABLES (Railway)
+# ===============================
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 CMC_API = os.getenv("CMC_API")
 SIGNAL_CHANNEL = int(os.getenv("SIGNAL_CHANNEL"))
-ALERT_ROLE = os.getenv("ALERT_ROLE")  # optional role ping
+ALERT_ROLE = os.getenv("ALERT_ROLE")
 
-# ================================
+if not DISCORD_TOKEN:
+    raise ValueError("DISCORD_TOKEN not set")
+
+if not CMC_API:
+    raise ValueError("CMC_API not set")
+
+if not SIGNAL_CHANNEL:
+    raise ValueError("SIGNAL_CHANNEL not set")
+
+
+# ===============================
 # DISCORD CLIENT
-# ================================
+# ===============================
 
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
@@ -27,9 +37,9 @@ win_rate = {"wins":0,"loss":0}
 last_coin = None
 
 
-# ================================
+# ===============================
 # GET TOP 100 COINS (CMC)
-# ================================
+# ===============================
 
 async def get_top_coins():
 
@@ -41,22 +51,24 @@ async def get_top_coins():
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url,headers=headers,params=params) as resp:
+
             data = await resp.json()
 
     coins = []
 
+    if "data" not in data:
+        return []
+
     for coin in data["data"]:
         symbol = coin["symbol"]+"USDT"
-
-        if symbol not in ["USDTUSDT","BUSDUSDT"]:
-            coins.append(symbol)
+        coins.append(symbol)
 
     return coins
 
 
-# ================================
-# BINANCE KLINES
-# ================================
+# ===============================
+# BINANCE KLINE DATA
+# ===============================
 
 async def get_klines(symbol):
 
@@ -72,15 +84,15 @@ async def get_klines(symbol):
 
     df.columns=["time","open","high","low","close","volume"]
 
-    df["close"] = df["close"].astype(float)
-    df["volume"] = df["volume"].astype(float)
+    df["close"]=df["close"].astype(float)
+    df["volume"]=df["volume"].astype(float)
 
     return df
 
 
-# ================================
-# ORDER BOOK BIAS
-# ================================
+# ===============================
+# ORDER BOOK PRESSURE
+# ===============================
 
 async def order_book(symbol):
 
@@ -99,9 +111,9 @@ async def order_book(symbol):
         return "🔴 SELL PRESSURE"
 
 
-# ================================
+# ===============================
 # BTC DOMINANCE
-# ================================
+# ===============================
 
 async def btc_dominance():
 
@@ -111,14 +123,16 @@ async def btc_dominance():
 
     async with aiohttp.ClientSession() as session:
         async with session.get(url,headers=headers) as resp:
-            data = await resp.json()
+            data=await resp.json()
 
-    return data["data"]["btc_dominance"]
+    dom=data["data"]["btc_dominance"]
+
+    return dom
 
 
-# ================================
-# ALTCOIN SEASON
-# ================================
+# ===============================
+# ALTCOIN SEASON DETECTOR
+# ===============================
 
 async def altcoin_season():
 
@@ -126,19 +140,19 @@ async def altcoin_season():
 
     if dom < 50:
         return "🚀 ALTCOIN SEASON"
+
     elif dom > 60:
         return "🛑 BTC DOMINANCE"
+
     else:
         return "⚖️ BALANCED MARKET"
 
 
-# ================================
-# TECHNICAL ANALYSIS ENGINE
-# ================================
+# ===============================
+# TECHNICAL ANALYSIS
+# ===============================
 
 def analyze(df):
-
-    price = df["close"].iloc[-1]
 
     rsi = ta.momentum.RSIIndicator(df["close"]).rsi().iloc[-1]
 
@@ -148,9 +162,9 @@ def analyze(df):
 
     ema50 = ta.trend.EMAIndicator(df["close"],50).ema_indicator().iloc[-1]
 
-    volume = df["volume"].iloc[-1]
+    price = df["close"].iloc[-1]
 
-    vol_avg = df["volume"].rolling(20).mean().iloc[-1]
+    volume = df["volume"].iloc[-1]
 
     score = 0
 
@@ -166,51 +180,41 @@ def analyze(df):
     if price > ema20:
         score += 1
 
-    if volume > vol_avg:
-        score += 1
+    if score >=3:
+        signal="BUY"
 
-    if score >= 4:
-        signal = "BUY"
-
-    elif score <= 1:
-        signal = "SELL"
+    elif score<=1:
+        signal="SELL"
 
     else:
-        signal = "NEUTRAL"
+        signal="NEUTRAL"
 
-    confidence = score * 20
+    confidence = score*25
 
-    volume_spike = volume > vol_avg
-
-    return signal,confidence,price,volume,rsi,volume_spike
+    return signal,confidence,price,volume,rsi
 
 
-# ================================
+# ===============================
 # TRADE TYPE
-# ================================
+# ===============================
 
 def trade_type():
 
-    return random.choice(["⚡ SCALP","📈 INTRADAY","🌙 SWING"])
+    types=["⚡ SCALP","📈 INTRADAY","🌙 SWING"]
+
+    return random.choice(types)
 
 
-# ================================
+# ===============================
 # BUILD DISCORD MESSAGE
-# ================================
+# ===============================
 
-def build_signal(symbol,signal,confidence,price,volume,rsi,order,trade,volume_spike,season):
+def build_signal(symbol,signal,confidence,price,volume,rsi,order,trade,market):
 
-    direction = "🟢 BUY" if signal=="BUY" else "🔴 SELL"
+    direction="🟢 BUY" if signal=="BUY" else "🔴 SELL"
 
-    spike = "🔥 YES" if volume_spike else "No"
+    msg=f"""
 
-    tp1 = round(price*1.01,6)
-    tp2 = round(price*1.02,6)
-    tp3 = round(price*1.03,6)
-
-    sl = round(price*0.985,6)
-
-    message = f"""
 🚨 **AI GOD MODE SIGNAL**
 
 Coin: **{symbol}**
@@ -219,45 +223,46 @@ Direction: {direction}
 
 Trade Type: {trade}
 
-Entry: {price}
-
-Take Profit:
-TP1: {tp1}
-TP2: {tp2}
-TP3: {tp3}
-
-Stop Loss:
-{sl}
+Entry: {round(price,6)}
 
 AI Confidence: {confidence}%
 
-RSI: {round(rsi,2)}
-
-Volume Spike: {spike}
-
 Order Book Bias: {order}
 
-Market State:
-{season}
+Market State: {market}
 
-Win Rate:
+Volume: {round(volume,2)}
+
+RSI: {round(rsi,2)}
+
+🎯 Take Profit
+
+TP1: {round(price*1.01,6)}
+TP2: {round(price*1.02,6)}
+TP3: {round(price*1.03,6)}
+
+🛑 Stop Loss
+
+{round(price*0.985,6)}
+
+📊 Win Rate
 {win_rate["wins"]}/{win_rate["wins"]+win_rate["loss"]}
 
-🤖 Institutional AI Trading Engine
+🤖 Institutional AI Engine
 """
 
-    return message
+    return msg
 
 
-# ================================
-# MAIN TRADING LOOP
-# ================================
+# ===============================
+# MAIN BOT LOOP
+# ===============================
 
 async def trading_loop():
 
     await client.wait_until_ready()
 
-    channel = await client.fetch_channel(SIGNAL_CHANNEL)
+    channel = client.get_channel(SIGNAL_CHANNEL)
 
     global last_coin
 
@@ -267,19 +272,22 @@ async def trading_loop():
 
             coins = await get_top_coins()
 
+            if not coins:
+                await asyncio.sleep(120)
+                continue
+
             coin = random.choice(coins)
 
             if coin == last_coin:
-                await asyncio.sleep(10)
                 continue
 
             last_coin = coin
 
             df = await get_klines(coin)
 
-            signal,confidence,price,volume,rsi,volume_spike = analyze(df)
+            signal,confidence,price,volume,rsi = analyze(df)
 
-            if signal == "NEUTRAL":
+            if signal=="NEUTRAL":
                 await asyncio.sleep(60)
                 continue
 
@@ -287,14 +295,12 @@ async def trading_loop():
 
             trade = trade_type()
 
-            season = await altcoin_season()
+            market = await altcoin_season()
 
-            msg = build_signal(
-                coin,signal,confidence,price,volume,rsi,order,trade,volume_spike,season
-            )
+            msg = build_signal(coin,signal,confidence,price,volume,rsi,order,trade,market)
 
             if ALERT_ROLE:
-                msg = f"<@&{ALERT_ROLE}> " + msg
+                msg = f"<@&{ALERT_ROLE}> {msg}"
 
             await channel.send(msg)
 
@@ -307,9 +313,9 @@ async def trading_loop():
             await asyncio.sleep(60)
 
 
-# ================================
-# BOT READY
-# ================================
+# ===============================
+# DISCORD READY EVENT
+# ===============================
 
 @client.event
 async def on_ready():
@@ -318,5 +324,9 @@ async def on_ready():
 
     client.loop.create_task(trading_loop())
 
+
+# ===============================
+# START BOT
+# ===============================
 
 client.run(DISCORD_TOKEN)
